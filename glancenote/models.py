@@ -131,8 +131,14 @@ class Confirmation(models.Model):
 
 class Assistant(models.Model):
     user = models.OneToOneField(ParentProfile, on_delete=models.CASCADE)
-    files = models.JSONField(default=list)
-    def __str__(self):
-        return f"{self.user.get_full_name()} ({self.user.email})"
+    assistant_id = models.CharField(max_length=255, null=True)
+    files = models.ManyToManyField('UploadedFile')
 
-    
+
+class UploadedFile(models.Model):
+    file_id = models.CharField(max_length=255)
+    file_name = models.CharField(max_length=255)
+    upload_date = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.file_name

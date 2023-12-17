@@ -7,7 +7,8 @@ from django.views.decorators.http import require_http_methods
 from django.core.exceptions import ObjectDoesNotExist
 from glancenote.text import send_verification_code
 from glancenote.utils.csv import filter_csv_by_student, save_model_data_as_csv
-from .models import Student, TeacherProfile, User, Confirmation, ParentProfile, Course, Assignment, Log, Enrollment, AssignmentCompletion
+from glancenote.utils.file import create_or_update_openai_assistant
+from .models import Assistant, Student, TeacherProfile, User, Confirmation, ParentProfile, Course, Assignment, Log, Enrollment, AssignmentCompletion
 import secrets
 from decouple import config
 from glancenote.utils.email import send_email_via_postmark
@@ -88,49 +89,56 @@ def openai_chat(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
-def teacher_signup(request):
-    data = json.loads(request.body)
-    email = data.get('email')
-    password = data.get('password')
-     # Use your custom form for user creation
-    form = CustomUserCreationForm(data)
-    
-    confirmationToken = secrets.token_hex(20)
+def parent_signup(request):
+    try:
+        data = json.loads(request.body)
+        email = data.get('email')
+        password = data.get('password')
 
-        # Check if the email already exists
-    if User.objects.filter(email=email).exists():
-        return JsonResponse({'error': 'User already exists'}, status=400)
+       
+        form = CustomUserCreationForm(data)
 
-    if form.is_valid():
-        user = form.save()
+        if User.objects.filter(email=email).exists():
+            return JsonResponse({'error': 'User already exists'}, status=400)
 
-        # Create a ParentProfile instance (assuming ParentProfile is the correct model here)
-        user_profile = ParentProfile(
-            user=user,
-            email_verified=False,
-            phone_verified=False,
-        )
-        user_profile.save()
+        if form.is_valid():
+            user = form.save()
 
-    # Create a confirmation instance for email verification
-    confirmation = Confirmation(
-        email=email,
-        confirmation_token=confirmationToken,
-    )
-    confirmation.save()
+            # Create a ParentProfile instance
+            user_profile = ParentProfile(
+                user=user,
+                email_verified=False,
+                phone_verified=False,
+            )
+            user_profile.save()
 
-    # Prepare and send the verification email
-    subject = "Verify Your Email"
-    frontend_url = config('FRONTEND_URL')
-    message = f"To continue setting up your Humuli account, please click the following link to confirm your email: {frontend_url}/onboarding/info?token={confirmationToken}&email={email}"
-    
-    sender = config('EMAIL_SENDER')
-    token = config('ONBOARDING_EMAIL_SERVER_TOKEN')
+            # Create a confirmation instance for email verification
+            confirmationToken = secrets.token_hex(20)
+            confirmation = Confirmation(
+                email=email,
+                confirmation_token=confirmationToken,
+            )
+            confirmation.save()
 
-    send_email_via_postmark(subject, message, sender, [email], token)
+            # Prepare and send the verification email
+            # Assuming you have these configurations and methods set up
+            subject = "Verify Your Email"
+            frontend_url = config('FRONTEND_URL')
+            message = f"To continue setting up your Glance account, please click the following link to confirm your email: {frontend_url}/onboarding/info?token={confirmationToken}&email={email}"
+            sender = config('EMAIL_SENDER')
+            token = config('ONBOARDING_EMAIL_SERVER_TOKEN')
+            send_email_via_postmark(subject, message, sender, [email], token)
 
-    # Return a success response
-    return JsonResponse({'message': 'Verification email sent successfully.'})
+            # Return a success response
+            return JsonResponse({'message': 'Verification email sent successfully.'})
+
+        else:
+            return JsonResponse({'error': form.errors}, status=400)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
 
 
 @csrf_exempt
@@ -158,6 +166,8 @@ def parent_signup(request):
             phone_verified=False,
         )
         user_profile.save()
+    else:
+        return JsonResponse({'error': form.errors}, status=400)
 
     # Create a confirmation instance for email verification
     confirmation = Confirmation(
@@ -206,22 +216,25 @@ def add_parent_info(request):
         if phone_number:
             profile.phone_number = phone_number
         if student_id: 
-            profile.student_id = student_id   
+            student = Student.objects.get(unique_id=student_id)
+            profile.student = student  
 
         # Save the updated profile
         profile.save()
 
         if student_id:
             # Save data for each model as CSV
-            save_model_data_as_csv(Course, 'courses_data.csv')
-            save_model_data_as_csv(Assignment, 'assignments_data.csv')
-            save_model_data_as_csv(Log, 'logs_data.csv')
-            save_model_data_as_csv(Student, 'students_data.csv')
-            save_model_data_as_csv(Enrollment, 'enrollments_data.csv')
-            save_model_data_as_csv(AssignmentCompletion, 'assignment_completions_data.csv')
+             if student_id:
             
-            filter_csv_by_student('path/to/courses_data.csv', student_id, 'student', 'filtered_courses_data.csv')
-            filter_csv_by_student('path/to/assignments_data.csv', student_id, 'student', 'filtered_assignments_data.csv')
+
+            # Create or update the OpenAI assistant for the student
+                try:
+                    assistant_id = create_or_update_openai_assistant(student_id)
+                    # Store the assistant in the database
+                    parent_profile = ParentProfile.objects.get(user=user)
+                    Assistant.objects.update_or_create(user=parent_profile, defaults={'assistant_id': assistant_id})
+                except Exception as e:
+                    return JsonResponse({'error': f'Failed to create/update assistant: {str(e)}'}, status=500)
 
            # Send verification SMS
         if phone_number:
