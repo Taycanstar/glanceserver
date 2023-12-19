@@ -7,7 +7,6 @@ import time
 from django.views.decorators.http import require_http_methods
 from django.core.exceptions import ObjectDoesNotExist
 from glancenote.text import send_verification_code,  verify_number
-from glancenote.utils.csv import filter_csv_by_student, save_model_data_as_csv
 from glancenote.utils.file import create_or_update_openai_assistant
 from .models import Assistant, Student, TeacherProfile, User, Confirmation, ParentProfile, Course, Assignment, Log, Enrollment, AssignmentCompletion
 import secrets
@@ -36,60 +35,72 @@ client = OpenAI()
 
 @csrf_exempt
 def openai_chat(request):
-    if request.method == 'POST':
-        data = json.loads(request.body)
-        user_question = data.get('prompt')
-        print(f"User question: {user_question}")
-        # Create a thread using the assistantId
-        thread = client.beta.threads.create()
+    try:
+        if request.method == 'POST':
+            data = json.loads(request.body)
+            user_question = data.get('prompt')
+            user_email = data.get('email')  # User's email
 
-        # Add user's question to the thread
-        client.beta.threads.messages.create(
-            thread_id=thread.id, 
-            role="user", 
-            content=user_question
-        )
+            user = User.objects.get(email=user_email)
+            parent_profile = ParentProfile.objects.get(user=user)
+            assistant_entry = Assistant.objects.get(user=parent_profile)
+            assistant_id = assistant_entry.assistant_id
 
-        assistant = client.beta.assistants.create(
-  name="Teacher Assistant",
-  description="You are a teacher assistant. Your job is to read files and answer questions based on the content of the files. You are great at reading specific data and outputting data based on what you read. You analyze data present in .csv files, understand trends, and come up with the corresponding data to the prompt.",
-  model="gpt-4-1106-preview",
-  tools=[{"type": "code_interpreter"}, {"type": "retrieval"}],
-  file_ids=[]
-)
+            if not assistant_id:
+                return JsonResponse({'error': 'Assistant ID not found.'}, status=404)
 
-        # Create a run to process the message
-        run = client.beta.threads.runs.create(
-            thread_id=thread.id, 
-            assistant_id=assistant.id  
-        )
+            # Create a thread using the assistantId
+            thread = client.beta.threads.create()
 
-        # Wait for the run to complete
-        run_status = None
-        while run_status != "completed":
-            run_status_response = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
-            run_status = run_status_response.status
-            time.sleep(1)  # Wait before checking the status again
+            # Add user's question to the thread
+            client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=user_question
+            )
 
-        # Retrieve messages after the run is completed
-        messages = client.beta.threads.messages.list(thread.id)
+            # Create a run to process the message with the specific assistant
+            run = client.beta.threads.runs.create(
+                thread_id=thread.id,
+                assistant_id=assistant_id
+            )
 
-        # Find the last message from the assistant
-        last_message_for_run = next(
-            (message for message in messages if message.run_id == run.id and message.role == "assistant"), 
-            None
-        )
+            # Wait for the run to complete
+            run_status = None
+            while run_status != "completed":
+                run_status_response = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+                run_status = run_status_response.status
+                time.sleep(1)  # Wait before checking the status again
 
-        # Return the assistant's response
-        if last_message_for_run:
-            response_text = last_message_for_run.content[0].text.value  # Adjust according to the message structure
-            print(f"AI Response: {response_text}")
-            return JsonResponse({'response': response_text})
+            # Retrieve messages after the run is completed
+            messages = client.beta.threads.messages.list(thread.id)
+
+            # Find the last message from the assistant
+            last_message_for_run = next(
+                (message for message in messages if message.run_id == run.id and message.role == "assistant"),
+                None
+            )
+
+            # Return the assistant's response
+            if last_message_for_run:
+                response_text = last_message_for_run.content[0].text.value
+                return JsonResponse({'response': response_text})
+            else:
+                return JsonResponse({'error': 'No response received from the assistant.'})
+
         else:
-            print("Invalid request method")
-            return JsonResponse({'error': 'No response received from the assistant.'})
+            return JsonResponse({'error': 'Invalid request method'}, status=400)
 
-    return JsonResponse({'error': 'Invalid request'}, status=400)
+    except ParentProfile.DoesNotExist:
+        print("ParentProfile not found")
+        return JsonResponse({'error': 'ParentProfile not found'}, status=404)
+    except Assistant.DoesNotExist:
+        print("Assistant not found")
+        return JsonResponse({'error': 'Assistant not found'}, status=404)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return JsonResponse({'error': str(e)}, status=500)
+    
 
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -406,9 +417,76 @@ def login_without_password(request):
             token, created = Token.objects.get_or_create(user=user)
             return JsonResponse({
                 'message': 'Login successful',
-                'token': token.key
+                'token': token.key,
+                "user": email
             })
         else:
             return JsonResponse({'error': 'Authentication failed'}, status=401)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def login(request):
+    try:
+        data = json.loads(request.body)
+        email = data.get('email')
+        password = data.get('password')
+        user = authenticate(username=email, password=password)
+
+        if user is not None:
+            token, created = Token.objects.get_or_create(user=user)
+            user_data = {
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name
+            }
+
+            # Check if the user has a ParentProfile
+            try:
+                parent_profile = ParentProfile.objects.get(user=user)
+                profile_data = {
+                    'gender': parent_profile.gender,
+                    'phone_number': parent_profile.phone_number,
+                    'birthday': parent_profile.birthday,
+                    'photo': parent_profile.photo.url if parent_profile.photo else None,
+                    'subscription': parent_profile.subscription,
+                    'phone_verified': parent_profile.phone_verified,
+                    'email_verified': parent_profile.email_verified,
+                    'student': parent_profile.student.id if parent_profile.student else None
+                }
+                user_data.update(profile_data)
+                user_data['profile_type'] = 'Parent'
+            except ParentProfile.DoesNotExist:
+                pass
+
+            # Check if the user has a TeacherProfile
+            try:
+                teacher_profile = TeacherProfile.objects.get(user=user)
+                profile_data = {
+                    'photo': teacher_profile.photo.url if teacher_profile.photo else None,
+                    'phone_verified': teacher_profile.phone_verified,
+                    'email_verified': teacher_profile.email_verified,
+                    'phone_number': teacher_profile.phone_number,
+                    'birthday': teacher_profile.birthday,
+                    'gender': teacher_profile.gender,
+                    'institution': teacher_profile.institution.id if teacher_profile.institution else None,
+                    'courses': list(teacher_profile.courses.values_list('id', flat=True))
+                }
+                user_data.update(profile_data)
+                user_data['profile_type'] = 'Teacher'
+            except TeacherProfile.DoesNotExist:
+                pass
+
+            return JsonResponse({
+                'message': 'Login successful',
+                'user': email,
+                'token': token.key
+            })
+
+        else:
+            return JsonResponse({'error': 'Invalid credentials'}, status=401)
+
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
