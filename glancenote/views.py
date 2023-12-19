@@ -1,3 +1,4 @@
+import traceback
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
@@ -5,7 +6,7 @@ from  openai import OpenAI  # Adjust import according to your project structure
 import time
 from django.views.decorators.http import require_http_methods
 from django.core.exceptions import ObjectDoesNotExist
-from glancenote.text import send_verification_code
+from glancenote.text import send_verification_code,  verify_number
 from glancenote.utils.csv import filter_csv_by_student, save_model_data_as_csv
 from glancenote.utils.file import create_or_update_openai_assistant
 from .models import Assistant, Student, TeacherProfile, User, Confirmation, ParentProfile, Course, Assignment, Log, Enrollment, AssignmentCompletion
@@ -14,6 +15,9 @@ from decouple import config
 from glancenote.utils.email import send_email_via_postmark
 from django.contrib.auth.forms import UserCreationForm
 from twilio.base.exceptions import TwilioRestException
+from django.contrib.auth import authenticate
+from rest_framework.authtoken.models import Token
+
 
 class CustomUserCreationForm(UserCreationForm):
     class Meta:
@@ -164,6 +168,7 @@ def parent_signup(request):
             user=user,
             email_verified=False,
             phone_verified=False,
+            
         )
         user_profile.save()
     else:
@@ -252,3 +257,158 @@ def add_parent_info(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def confirm_parent_email(request):
+    try:
+        data = json.loads(request.body)
+        confirmation_token = data.get('confirmationToken')
+        email = data.get('email')
+
+        # Retrieve the confirmation instance
+        try:
+            confirmation = Confirmation.objects.get(confirmation_token=confirmation_token)
+        except Confirmation.DoesNotExist:
+            return JsonResponse({'message': 'Confirmation token not found'}, status=404)
+
+        # Check if email matches
+        if confirmation.email != email:
+            return JsonResponse({'message': 'Invalid confirmation token or email'}, status=401)
+
+        # Find or create the user
+        user, created = User.objects.get_or_create(email=email)
+
+        # Update or create the user profile
+        profile, created = ParentProfile.objects.get_or_create(user=user)
+        profile.email_verified = True
+        profile.save()
+
+        # Delete the confirmation instance
+        confirmation.delete()
+
+        return JsonResponse({'message': 'User confirmed and email verified'})
+
+    except User.DoesNotExist:
+        return JsonResponse({'error': 'User not found'}, status=404)
+    except Exception as e:
+
+        traceback.print_exc()  # This will print the full traceback to your console or logs
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def resend_parent_email(request):
+    data = json.loads(request.body)
+    email = data.get('email')
+
+    # Retrieve the user and their associated UserProfile
+    try:
+        user = User.objects.get(email=email)
+        user_profile = ParentProfile.objects.get(user=user)
+    except (User.DoesNotExist, ParentProfile.DoesNotExist):
+        return JsonResponse({'error': 'User not found.'}, status=404)
+
+    # Check if the user's email is already verified
+    if user_profile.email_verified:
+        return JsonResponse({'message': 'Email is already verified.'})
+
+    # Retrieve the existing confirmation token
+    try:
+        confirmation = Confirmation.objects.get(email=email)
+        confirmationToken = confirmation.confirmation_token
+    except Confirmation.DoesNotExist:
+        return JsonResponse({'error': 'Confirmation token not found.'}, status=404)
+
+    # Prepare and resend the verification email
+    subject = "Verify Your Email"
+    frontend_url = config('FRONTEND_URL')
+    message = f"To continue setting up your Glancenote account, please click the following link to confirm your email: {frontend_url}/onboarding/info?token={confirmationToken}&email={email}"
+    
+    sender = config('EMAIL_SENDER')
+    token = config('ONBOARDING_EMAIL_SERVER_TOKEN')
+
+    send_email_via_postmark(subject, message, sender, [email], token)
+
+    # Return a success response
+    return JsonResponse({'message': 'Verification email resent successfully.'})
+
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def resend_parent_code(request):
+    try:
+        data = json.loads(request.body)
+        email = data.get('email')
+
+        # Retrieve the user's profile
+      
+        try:
+            user = User.objects.get(email=email)
+            user_profile = ParentProfile.objects.get(user=user)
+        except ParentProfile.DoesNotExist:
+            return JsonResponse({'error': 'User profile not found'}, status=404)
+
+        # Resend the OTP code
+        phone_number = user_profile.phone_number
+        if phone_number:
+            send_verification_code(phone_number)  # Replace with your OTP sending logic
+            return JsonResponse({'message': 'OTP code resent successfully'})
+        else:
+            return JsonResponse({'error': 'Phone number not found'}, status=404)
+
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
+    
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def confirm_parent_ph(request):
+    try:
+        data = json.loads(request.body)
+        phone_number = data.get('phoneNumber')
+        email = data.get('email')
+        otp_code = data.get('code')
+
+        verification_check = verify_number(phone_number, otp_code)
+
+        try:
+            user = User.objects.get(email=email)
+            user_profile = ParentProfile.objects.get(user=user)
+        except ParentProfile.DoesNotExist:
+            return JsonResponse({'error': 'User profile not found'}, status=404)
+        
+        if verification_check.status == "approved":
+            user_profile.phone_verified = True
+            user_profile.save()
+            return JsonResponse({'message': 'Phone number verified.'})
+        else:
+            return JsonResponse({'message': 'Invalid verification code.'}, status=400)
+
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
+    
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def login_without_password(request):
+    try:
+        data = json.loads(request.body)
+        email = data.get('email')
+
+        user = authenticate(email=email)
+        if user:
+            token, created = Token.objects.get_or_create(user=user)
+            return JsonResponse({
+                'message': 'Login successful',
+                'token': token.key
+            })
+        else:
+            return JsonResponse({'error': 'Authentication failed'}, status=401)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
