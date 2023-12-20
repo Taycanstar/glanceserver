@@ -1,0 +1,2 @@
+completion_id,student_id,course_id,course_name,assignment_id,assignment_name,completion_date,grade,completion_status
+2,9878781,1,Math,1,Addition,2023-12-17,78,True

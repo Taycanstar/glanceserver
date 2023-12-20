@@ -33,6 +33,76 @@ class CustomUserCreationForm(UserCreationForm):
 
 client = OpenAI()
 
+# @csrf_exempt
+# def openai_chat(request):
+#     try:
+#         if request.method == 'POST':
+#             data = json.loads(request.body)
+#             user_question = data.get('prompt')
+#             user_email = data.get('email')  # User's email
+
+#             user = User.objects.get(email=user_email)
+#             parent_profile = ParentProfile.objects.get(user=user)
+#             assistant_entry = Assistant.objects.get(user=parent_profile)
+#             # assistant_id = assistant_entry.assistant_id
+#             assistant_id = "asst_Cug2O8u9V6CllDukzf4ofZUh"
+
+#             if not assistant_id:
+#                 return JsonResponse({'error': 'Assistant ID not found.'}, status=404)
+
+#             # Create a thread using the assistantId
+#             thread = client.beta.threads.create()
+
+#             # Add user's question to the thread
+#             client.beta.threads.messages.create(
+#                 thread_id=thread.id,
+#                 role="user",
+#                 content=user_question
+#             )
+
+#             # Create a run to process the message with the specific assistant
+#             run = client.beta.threads.runs.create(
+#                 thread_id=thread.id,
+#                 assistant_id=assistant_id
+#             )
+
+#             # Wait for the run to complete
+#             run_status = None
+#             while run_status != "completed":
+#                 run_status_response = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+#                 run_status = run_status_response.status
+#                 time.sleep(1)  # Wait before checking the status again
+
+#             # Retrieve messages after the run is completed
+#             messages = client.beta.threads.messages.list(thread.id)
+
+#             # Find the last message from the assistant
+#             last_message_for_run = next(
+#                 (message for message in messages if message.run_id == run.id and message.role == "assistant"),
+#                 None
+#             )
+
+#             # Return the assistant's response
+#             if last_message_for_run:
+#                 response_text = last_message_for_run.content[0].text.value
+#                 return JsonResponse({'response': response_text})
+#             else:
+#                 return JsonResponse({'error': 'No response received from the assistant.'})
+
+#         else:
+#             return JsonResponse({'error': 'Invalid request method'}, status=400)
+
+#     except ParentProfile.DoesNotExist:
+#         print("ParentProfile not found")
+#         return JsonResponse({'error': 'ParentProfile not found'}, status=404)
+#     except Assistant.DoesNotExist:
+#         print("Assistant not found")
+#         return JsonResponse({'error': 'Assistant not found'}, status=404)
+#     except Exception as e:
+#         print(f"An error occurred: {e}")
+#         return JsonResponse({'error': str(e)}, status=500)
+
+
 @csrf_exempt
 def openai_chat(request):
     try:
@@ -45,35 +115,42 @@ def openai_chat(request):
             parent_profile = ParentProfile.objects.get(user=user)
             assistant_entry = Assistant.objects.get(user=parent_profile)
             assistant_id = assistant_entry.assistant_id
+            # assistant_id = "asst_Cug2O8u9V6CllDukzf4ofZUh"
 
             if not assistant_id:
                 return JsonResponse({'error': 'Assistant ID not found.'}, status=404)
 
-            # Create a thread using the assistantId
-            thread = client.beta.threads.create()
+            # Check if there is an existing thread_id stored for this user, otherwise create a new thread
+            if hasattr(parent_profile, 'thread_id') and parent_profile.thread_id:
+                thread_id = parent_profile.thread_id
+            else:
+                thread = client.beta.threads.create()
+                thread_id = thread.id
+                parent_profile.thread_id = thread_id  # Save thread_id to the parent profile
+                parent_profile.save()
 
-            # Add user's question to the thread
+            # Add user's question to the existing or new thread
             client.beta.threads.messages.create(
-                thread_id=thread.id,
+                thread_id=thread_id,
                 role="user",
                 content=user_question
             )
 
             # Create a run to process the message with the specific assistant
             run = client.beta.threads.runs.create(
-                thread_id=thread.id,
+                thread_id=thread_id,
                 assistant_id=assistant_id
             )
 
             # Wait for the run to complete
             run_status = None
             while run_status != "completed":
-                run_status_response = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+                run_status_response = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
                 run_status = run_status_response.status
                 time.sleep(1)  # Wait before checking the status again
 
             # Retrieve messages after the run is completed
-            messages = client.beta.threads.messages.list(thread.id)
+            messages = client.beta.threads.messages.list(thread_id)
 
             # Find the last message from the assistant
             last_message_for_run = next(
@@ -100,6 +177,7 @@ def openai_chat(request):
     except Exception as e:
         print(f"An error occurred: {e}")
         return JsonResponse({'error': str(e)}, status=500)
+
     
 
 @csrf_exempt
@@ -205,7 +283,6 @@ def parent_signup(request):
     # Return a success response
     return JsonResponse({'message': 'Verification email sent successfully.'})
 
-
 @csrf_exempt
 @require_http_methods(["PUT"])
 def add_parent_info(request):
@@ -239,35 +316,29 @@ def add_parent_info(request):
         profile.save()
 
         if student_id:
-            # Save data for each model as CSV
-             if student_id:
-            
+            try:
+                assistant_id = create_or_update_openai_assistant(student_id)
+                parent_profile = ParentProfile.objects.get(user=user)
+                Assistant.objects.update_or_create(user=parent_profile, defaults={'assistant_id': assistant_id})
+            except Exception as e:
+                print(f"Failed to create/update assistant: {e}")
+                return JsonResponse({'error': f'Failed to create/update assistant: {str(e)}'}, status=500)
 
-            # Create or update the OpenAI assistant for the student
-                try:
-                    assistant_id = create_or_update_openai_assistant(student_id)
-                    # Store the assistant in the database
-                    parent_profile = ParentProfile.objects.get(user=user)
-                    Assistant.objects.update_or_create(user=parent_profile, defaults={'assistant_id': assistant_id})
-                except Exception as e:
-                    return JsonResponse({'error': f'Failed to create/update assistant: {str(e)}'}, status=500)
-
-           # Send verification SMS
         if phone_number:
             try:
-
                 send_verification_code(phone_number)
-            except TwilioRestException:
-                # Handle Twilio exception for invalid phone number
+            except TwilioRestException as e:
+                print(f"TwilioRestException: {e}")
                 return JsonResponse({'error': 'Invalid phone number'}, status=400)
 
         return JsonResponse({'message': 'User profile updated successfully and SMS sent.'})
 
-    except ObjectDoesNotExist:
+    except ObjectDoesNotExist as e:
+        print(f"ObjectDoesNotExist: {e}")
         return JsonResponse({'error': 'User not found'}, status=404)
     except Exception as e:
+        print(f"General Exception: {e}")
         return JsonResponse({'error': str(e)}, status=500)
-
 
 
 @csrf_exempt

@@ -1,2 +1,2 @@
-id,name,code,teacher_id
-1,Math,MA001,
+course_id,course_name,course_code,teacher_id,teacher_name,institution_id
+1,Math,MA001,,,

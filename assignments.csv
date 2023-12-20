@@ -1,2 +1,2 @@
-id,course_id,name,due_date
-1,1,Addition,2023-12-13 20:06:40+00:00
+assignment_id,assignment_name,due_date,course_id,course_name
+1,Addition,2023-12-13,1,Math

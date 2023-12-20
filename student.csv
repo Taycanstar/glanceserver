@@ -1,2 +1,2 @@
-id,first_name,last_name,phone_number,institution_id,unique_id
-3,Cillian,Murphy,,1,9878781
+student_id,first_name,last_name,phone_number,institution_id,institution_name
+9878781,alan,Murphy,,1,Success Academy
