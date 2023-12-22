@@ -113,6 +113,7 @@ class ParentProfile(models.Model):
     phone_verified = models.BooleanField(default=False)
     email_verified = models.BooleanField(default=False)
     student = models.ForeignKey(Student, on_delete=models.SET_NULL, null=True, blank=True)
+    thread_id = models.CharField(max_length=255, null=True, blank=True)
 
     def __str__(self):
         return self.user.email
@@ -142,3 +143,19 @@ class UploadedFile(models.Model):
 
     def __str__(self):
         return self.file_name
+
+
+
+class Lecture(models.Model):
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='lectures')
+    teacher = models.ForeignKey(TeacherProfile, on_delete=models.CASCADE, related_name='lectures')
+    date = models.DateTimeField()
+    title = models.CharField(max_length=200)
+    script = models.TextField(blank=True, null=True)
+    additional_notes = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.title} - {self.course.name} - {self.date.strftime('%Y-%m-%d %H:%M')}"
+
+    class Meta:
+        ordering = ['-date']

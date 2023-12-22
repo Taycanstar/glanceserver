@@ -18,6 +18,7 @@ from django.contrib.auth import authenticate
 from rest_framework.authtoken.models import Token
 
 
+
 class CustomUserCreationForm(UserCreationForm):
     class Meta:
         model = User
@@ -33,76 +34,6 @@ class CustomUserCreationForm(UserCreationForm):
 
 client = OpenAI()
 
-# @csrf_exempt
-# def openai_chat(request):
-#     try:
-#         if request.method == 'POST':
-#             data = json.loads(request.body)
-#             user_question = data.get('prompt')
-#             user_email = data.get('email')  # User's email
-
-#             user = User.objects.get(email=user_email)
-#             parent_profile = ParentProfile.objects.get(user=user)
-#             assistant_entry = Assistant.objects.get(user=parent_profile)
-#             # assistant_id = assistant_entry.assistant_id
-#             assistant_id = "asst_Cug2O8u9V6CllDukzf4ofZUh"
-
-#             if not assistant_id:
-#                 return JsonResponse({'error': 'Assistant ID not found.'}, status=404)
-
-#             # Create a thread using the assistantId
-#             thread = client.beta.threads.create()
-
-#             # Add user's question to the thread
-#             client.beta.threads.messages.create(
-#                 thread_id=thread.id,
-#                 role="user",
-#                 content=user_question
-#             )
-
-#             # Create a run to process the message with the specific assistant
-#             run = client.beta.threads.runs.create(
-#                 thread_id=thread.id,
-#                 assistant_id=assistant_id
-#             )
-
-#             # Wait for the run to complete
-#             run_status = None
-#             while run_status != "completed":
-#                 run_status_response = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
-#                 run_status = run_status_response.status
-#                 time.sleep(1)  # Wait before checking the status again
-
-#             # Retrieve messages after the run is completed
-#             messages = client.beta.threads.messages.list(thread.id)
-
-#             # Find the last message from the assistant
-#             last_message_for_run = next(
-#                 (message for message in messages if message.run_id == run.id and message.role == "assistant"),
-#                 None
-#             )
-
-#             # Return the assistant's response
-#             if last_message_for_run:
-#                 response_text = last_message_for_run.content[0].text.value
-#                 return JsonResponse({'response': response_text})
-#             else:
-#                 return JsonResponse({'error': 'No response received from the assistant.'})
-
-#         else:
-#             return JsonResponse({'error': 'Invalid request method'}, status=400)
-
-#     except ParentProfile.DoesNotExist:
-#         print("ParentProfile not found")
-#         return JsonResponse({'error': 'ParentProfile not found'}, status=404)
-#     except Assistant.DoesNotExist:
-#         print("Assistant not found")
-#         return JsonResponse({'error': 'Assistant not found'}, status=404)
-#     except Exception as e:
-#         print(f"An error occurred: {e}")
-#         return JsonResponse({'error': str(e)}, status=500)
-
-
 @csrf_exempt
 def openai_chat(request):
     try:
@@ -111,25 +42,23 @@ def openai_chat(request):
             user_question = data.get('prompt')
             user_email = data.get('email')  # User's email
 
+            # Retrieve the user and their parent profile
             user = User.objects.get(email=user_email)
             parent_profile = ParentProfile.objects.get(user=user)
-            assistant_entry = Assistant.objects.get(user=parent_profile)
-            assistant_id = assistant_entry.assistant_id
-            # assistant_id = "asst_Cug2O8u9V6CllDukzf4ofZUh"
+            # assistant_id = parent_profile.assistant.assistant_id  
+            assistant_id = "asst_CWCg6YI4UiRrj3lA9AGc90qZ"  
 
             if not assistant_id:
                 return JsonResponse({'error': 'Assistant ID not found.'}, status=404)
 
-            # Check if there is an existing thread_id stored for this user, otherwise create a new thread
-            if hasattr(parent_profile, 'thread_id') and parent_profile.thread_id:
-                thread_id = parent_profile.thread_id
-            else:
+            # Check if there is an existing thread_id, otherwise create a new thread
+            if not parent_profile.thread_id:
                 thread = client.beta.threads.create()
-                thread_id = thread.id
-                parent_profile.thread_id = thread_id  # Save thread_id to the parent profile
+                parent_profile.thread_id = thread.id
                 parent_profile.save()
+            thread_id = parent_profile.thread_id
 
-            # Add user's question to the existing or new thread
+            # Add user's question to the thread
             client.beta.threads.messages.create(
                 thread_id=thread_id,
                 role="user",
@@ -169,15 +98,11 @@ def openai_chat(request):
             return JsonResponse({'error': 'Invalid request method'}, status=400)
 
     except ParentProfile.DoesNotExist:
-        print("ParentProfile not found")
         return JsonResponse({'error': 'ParentProfile not found'}, status=404)
-    except Assistant.DoesNotExist:
-        print("Assistant not found")
-        return JsonResponse({'error': 'Assistant not found'}, status=404)
+    except User.DoesNotExist:
+        return JsonResponse({'error': 'User not found'}, status=404)
     except Exception as e:
-        print(f"An error occurred: {e}")
         return JsonResponse({'error': str(e)}, status=500)
-
     
 
 @csrf_exempt
@@ -273,7 +198,7 @@ def parent_signup(request):
     # Prepare and send the verification email
     subject = "Verify Your Email"
     frontend_url = config('FRONTEND_URL')
-    message = f"To continue setting up your Glance account, please click the following link to confirm your email: {frontend_url}/onboarding/info?token={confirmationToken}&email={email}"
+    message = f"To continue setting up your Glancenote account, please click the following link to confirm your email: {frontend_url}/onboarding/info?token={confirmationToken}&email={email}"
     
     sender = config('EMAIL_SENDER')
     token = config('ONBOARDING_EMAIL_SERVER_TOKEN')
@@ -559,5 +484,30 @@ def login(request):
         else:
             return JsonResponse({'error': 'Invalid credentials'}, status=401)
 
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+    
+
+@csrf_exempt
+def initialize_thread(request):
+    try:
+        data = json.loads(request.body)
+        email = data.get('email')
+
+        user = User.objects.get(email=email)
+        parent_profile = ParentProfile.objects.get(user=user)
+
+        if not parent_profile.thread_id:
+            # If there is no thread_id, create a new thread
+            thread = client.beta.threads.create()
+            parent_profile.thread_id = thread.id
+            parent_profile.save()
+
+        return JsonResponse({'thread_id': parent_profile.thread_id})
+
+    except User.DoesNotExist:
+        return JsonResponse({'error': 'User not found'}, status=404)
+    except ParentProfile.DoesNotExist:
+        return JsonResponse({'error': 'ParentProfile not found'}, status=404)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
