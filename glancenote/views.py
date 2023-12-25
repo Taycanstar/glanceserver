@@ -8,7 +8,7 @@ from django.views.decorators.http import require_http_methods
 from django.core.exceptions import ObjectDoesNotExist
 from glancenote.text import send_verification_code,  verify_number
 from glancenote.utils.file import create_or_update_openai_assistant
-from .models import Assistant, Student, TeacherProfile, User, Confirmation, ParentProfile, Course, Assignment, Log, Enrollment, AssignmentCompletion
+from .models import Assistant, Student, TeacherProfile, User, Confirmation, ParentProfile, Course, Assignment, Log, Enrollment, AssignmentCompletion, Institution
 import secrets
 from decouple import config
 from glancenote.utils.email import send_email_via_postmark
@@ -16,6 +16,7 @@ from django.contrib.auth.forms import UserCreationForm
 from twilio.base.exceptions import TwilioRestException
 from django.contrib.auth import authenticate
 from rest_framework.authtoken.models import Token
+from datetime import datetime
 
 
 
@@ -104,60 +105,268 @@ def openai_chat(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
     
-
 @csrf_exempt
 @require_http_methods(["POST"])
-def parent_signup(request):
+def teacher_signup(request):
     try:
         data = json.loads(request.body)
         email = data.get('email')
         password = data.get('password')
+        institution_name = data.get('institution')  # Name of the institution
 
-       
-        form = CustomUserCreationForm(data)
+        # Dictionary mapping dropdown options to domains
+        domain_mapping = {
+            "Gmail": "@gmail.com",
+            "Eckerd College": "@eckerd.edu",
+        }
 
-        if User.objects.filter(email=email).exists():
-            return JsonResponse({'error': 'User already exists'}, status=400)
+        # Check if the selected institution is in the dictionary and validate the domain
+        if institution_name in domain_mapping and email.endswith(domain_mapping[institution_name]):
+            form = CustomUserCreationForm(data)
 
-        if form.is_valid():
-            user = form.save()
+            if User.objects.filter(email=email).exists():
+                return JsonResponse({'error': 'User already exists'}, status=400)
 
-            # Create a ParentProfile instance
-            user_profile = ParentProfile(
-                user=user,
-                email_verified=False,
-                phone_verified=False,
-            )
-            user_profile.save()
+            if form.is_valid():
+                user = form.save()
 
-            # Create a confirmation instance for email verification
-            confirmationToken = secrets.token_hex(20)
-            confirmation = Confirmation(
-                email=email,
-                confirmation_token=confirmationToken,
-            )
-            confirmation.save()
+                # Retrieve the Institution instance
+                try:
+                    institution = Institution.objects.get(name=institution_name)
+                except Institution.DoesNotExist:
+                    return JsonResponse({'error': 'Institution not found'}, status=400)
 
-            # Prepare and send the verification email
-            # Assuming you have these configurations and methods set up
-            subject = "Verify Your Email"
-            frontend_url = config('FRONTEND_URL')
-            message = f"To continue setting up your Glance account, please click the following link to confirm your email: {frontend_url}/onboarding/info?token={confirmationToken}&email={email}"
-            sender = config('EMAIL_SENDER')
-            token = config('ONBOARDING_EMAIL_SERVER_TOKEN')
-            send_email_via_postmark(subject, message, sender, [email], token)
+                # Create a TeacherProfile instance with the Institution instance
+                user_profile = TeacherProfile(
+                    user=user,
+                    email_verified=False,
+                    phone_verified=False,
+                    institution=institution  # Assign the Institution instance
+                )
+                user_profile.save()
 
-            # Return a success response
-            return JsonResponse({'message': 'Verification email sent successfully.'})
+                # Create a confirmation instance for email verification
+                confirmationToken = secrets.token_hex(20)
+                confirmation = Confirmation(
+                    email=email,
+                    confirmation_token=confirmationToken,
+                )
+                confirmation.save()
 
+                # Prepare and send the verification email
+                subject = "Verify Your Email"
+                frontend_url = config('FRONTEND_URL')
+                message = f"To continue setting up your account, please click the following link to confirm your email: {frontend_url}/onboarding/info-teacher?token={confirmationToken}&email={email}"
+                sender = config('EMAIL_SENDER')
+                token = config('ONBOARDING_EMAIL_SERVER_TOKEN')
+                send_email_via_postmark(subject, message, sender, [email], token)
+
+                return JsonResponse({'message': 'Verification email sent successfully.'})
+
+            else:
+                return JsonResponse({'error': form.errors}, status=400)
         else:
-            return JsonResponse({'error': form.errors}, status=400)
+            return JsonResponse({'error': 'Unable to verify institution'}, status=400)
 
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
+
+  
+@csrf_exempt
+@require_http_methods(["PUT"])
+def add_teacher_info(request):
+    try:
+        # Load data from the request
+        data = json.loads(request.body)
+        email = data.get('email')
+        first_name = data.get('firstName')
+        last_name = data.get('lastName')
+        birthday = data.get('birthday')
+        gender = data.get('gender')
+        phone_number = data.get('phoneNumber')
+
+        # Find the user by email
+        user = User.objects.get(email=email)
+
+        # Retrieve or create the user's profile
+        profile, created = ParentProfile.objects.get_or_create(user=user)
+
+        # Update the profile with new data
+        if first_name:
+            profile.first_name = first_name
+        if last_name:
+            profile.last_name = last_name
+        if phone_number:
+            profile.phone_number = phone_number
+        if birthday:
+            try:
+                # Convert from "MM/DD/YYYY" to "YYYY-MM-DD"
+                formatted_birthday = datetime.strptime(birthday, "%m/%d/%Y").date()
+                profile.birthday = formatted_birthday
+            except ValueError as e:
+                return JsonResponse({'error': f'Invalid birthday format: {str(e)}'}, status=400)
+        if gender:
+            profile.birthday = gender
+
+        # Save the updated profile
+        profile.save()
+
+        if phone_number:
+            try:
+                send_verification_code(phone_number)
+            except TwilioRestException as e:
+                print(f"TwilioRestException: {e}")
+                return JsonResponse({'error': 'Invalid phone number'}, status=400)
+
+        return JsonResponse({'message': 'User profile updated successfully and SMS sent.'})
+
+    except ObjectDoesNotExist as e:
+        print(f"ObjectDoesNotExist: {e}")
+        return JsonResponse({'error': 'User not found'}, status=404)
+    except Exception as e:
+        print(f"General Exception: {e}")
+        return JsonResponse({'error': str(e)}, status=500)
+    
+@csrf_exempt
+@require_http_methods(["POST"])
+def confirm_teacher_email(request):
+    try:
+        data = json.loads(request.body)
+        confirmation_token = data.get('confirmationToken')
+        email = data.get('email')
+
+        # Retrieve the confirmation instance
+        try:
+            confirmation = Confirmation.objects.get(confirmation_token=confirmation_token)
+        except Confirmation.DoesNotExist:
+            return JsonResponse({'message': 'Confirmation token not found'}, status=404)
+
+        # Check if email matches
+        if confirmation.email != email:
+            return JsonResponse({'message': 'Invalid confirmation token or email'}, status=401)
+
+        # Find or create the user
+        user, created = User.objects.get_or_create(email=email)
+
+        # Update or create the user profile
+        profile, created = TeacherProfile.objects.get_or_create(user=user)
+        profile.email_verified = True
+        profile.save()
+
+        # Delete the confirmation instance
+        confirmation.delete()
+
+        return JsonResponse({'message': 'User confirmed and email verified'})
+
+    except User.DoesNotExist:
+        return JsonResponse({'error': 'User not found'}, status=404)
+    except Exception as e:
+
+        traceback.print_exc()  # This will print the full traceback to your console or logs
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def resend_teacher_email(request):
+    data = json.loads(request.body)
+    email = data.get('email')
+
+    # Retrieve the user and their associated UserProfile
+    try:
+        user = User.objects.get(email=email)
+        user_profile = TeacherProfile.objects.get(user=user)
+    except (User.DoesNotExist, ParentProfile.DoesNotExist):
+        return JsonResponse({'error': 'User not found.'}, status=404)
+
+    # Check if the user's email is already verified
+    if user_profile.email_verified:
+        return JsonResponse({'message': 'Email is already verified.'})
+
+    # Retrieve the existing confirmation token
+    try:
+        confirmation = Confirmation.objects.get(email=email)
+        confirmationToken = confirmation.confirmation_token
+    except Confirmation.DoesNotExist:
+        return JsonResponse({'error': 'Confirmation token not found.'}, status=404)
+
+    # Prepare and resend the verification email
+    subject = "Verify Your Email"
+    frontend_url = config('FRONTEND_URL')
+    message = f"To continue setting up your Glancenote account, please click the following link to confirm your email: {frontend_url}/onboarding/info?token={confirmationToken}&email={email}"
+    
+    sender = config('EMAIL_SENDER')
+    token = config('ONBOARDING_EMAIL_SERVER_TOKEN')
+
+    send_email_via_postmark(subject, message, sender, [email], token)
+
+    # Return a success response
+    return JsonResponse({'message': 'Verification email resent successfully.'})
+
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def resend_teacher_code(request):
+    try:
+        data = json.loads(request.body)
+        email = data.get('email')
+
+        # Retrieve the user's profile
+      
+        try:
+            user = User.objects.get(email=email)
+            user_profile = TeacherProfile.objects.get(user=user)
+        except ParentProfile.DoesNotExist:
+            return JsonResponse({'error': 'User profile not found'}, status=404)
+
+        # Resend the OTP code
+        phone_number = user_profile.phone_number
+        if phone_number:
+            send_verification_code(phone_number)  # Replace with your OTP sending logic
+            return JsonResponse({'message': 'OTP code resent successfully'})
+        else:
+            return JsonResponse({'error': 'Phone number not found'}, status=404)
+
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
+    
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def confirm_teacher_ph(request):
+    try:
+        data = json.loads(request.body)
+        phone_number = data.get('phoneNumber')
+        email = data.get('email')
+        otp_code = data.get('code')
+
+        verification_check = verify_number(phone_number, otp_code)
+
+        try:
+            user = User.objects.get(email=email)
+            user_profile = TeacherProfile.objects.get(user=user)
+        except ParentProfile.DoesNotExist:
+            return JsonResponse({'error': 'User profile not found'}, status=404)
+        
+        if verification_check.status == "approved":
+            user_profile.phone_verified = True
+            user_profile.save()
+            return JsonResponse({'message': 'Phone number verified.'})
+        else:
+            return JsonResponse({'message': 'Invalid verification code.'}, status=400)
+
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
+    
+
+    
 
 @csrf_exempt
 @require_http_methods(["POST"])
