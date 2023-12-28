@@ -192,7 +192,7 @@ def add_teacher_info(request):
         user = User.objects.get(email=email)
 
         # Retrieve or create the user's profile
-        profile, created = ParentProfile.objects.get_or_create(user=user)
+        profile, created = TeacherProfile.objects.get_or_create(user=user)
 
         # Update the profile with new data
         if first_name:
@@ -620,10 +620,17 @@ def login_without_password(request):
         user = authenticate(email=email)
         if user:
             token, created = Token.objects.get_or_create(user=user)
+            user_type = None
+            if ParentProfile.objects.filter(user=user).exists():
+                user_type = 'Parent'
+            elif TeacherProfile.objects.filter(user=user).exists():
+                user_type = 'Teacher'
+
             return JsonResponse({
                 'message': 'Login successful',
                 'token': token.key,
-                "user": email
+                "user": email,
+                'userType': user_type
             })
         else:
             return JsonResponse({'error': 'Authentication failed'}, status=401)
@@ -647,6 +654,13 @@ def login(request):
                 'first_name': user.first_name,
                 'last_name': user.last_name
             }
+
+             # Determine if the user is a Parent or Teacher
+            user_type = None
+            if ParentProfile.objects.filter(user=user).exists():
+                user_type = 'Parent'
+            elif TeacherProfile.objects.filter(user=user).exists():
+                user_type = 'Teacher'
 
             # Check if the user has a ParentProfile
             try:
@@ -687,7 +701,8 @@ def login(request):
             return JsonResponse({
                 'message': 'Login successful',
                 'user': email,
-                'token': token.key
+                'token': token.key,
+                'userType': user_type
             })
 
         else:

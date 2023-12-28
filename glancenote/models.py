@@ -11,6 +11,7 @@ class Institution(models.Model):
     address = models.TextField( blank=True)
     website = models.CharField(max_length=200, blank=True)
     domains = models.JSONField(default=list, blank=True)
+    courses = models.ManyToManyField('Course', blank=True, related_name='institutions')
 
 
     def __str__(self):
@@ -60,6 +61,7 @@ class Course(models.Model):
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=10, null=True)
     teacher = models.ForeignKey(TeacherProfile, on_delete=models.CASCADE, related_name='taught_courses',  null=True,  blank=True)
+    
 
     class Meta:
         verbose_name_plural = "Courses"
